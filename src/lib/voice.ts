@@ -195,3 +195,54 @@ export function stopSpeaking() {
 	// Reset for next time
 	queueStopped = false;
 }
+
+// PTT: one-shot recognition. Returns a stop function.
+// Collects all speech while held, fires onResult with combined text on stop.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let pttRecognition: any = null;
+
+export function pttStart(onResult: SpeechCallback) {
+	if (pttRecognition) return;
+
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	const w = window as any;
+	const SpeechRecognitionCtor = w.SpeechRecognition ?? w.webkitSpeechRecognition;
+	if (!SpeechRecognitionCtor) {
+		console.warn('Speech recognition not supported');
+		return;
+	}
+
+	stopSpeaking(); // stop any TTS when user starts talking
+
+	let collected = '';
+	const rec = new SpeechRecognitionCtor();
+	rec.continuous = true;
+	rec.interimResults = false;
+	rec.lang = 'en-US';
+
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	rec.onresult = (event: any) => {
+		for (let i = event.resultIndex; i < event.results.length; i++) {
+			if (event.results[i].isFinal) {
+				collected += ' ' + event.results[i][0].transcript.trim();
+			}
+		}
+	};
+
+	rec.onerror = () => {};
+
+	rec.onend = () => {
+		pttRecognition = null;
+		const text = collected.trim();
+		if (text) onResult(text);
+	};
+
+	pttRecognition = rec;
+	try { rec.start(); } catch { /* */ }
+}
+
+export function pttStop() {
+	if (pttRecognition) {
+		try { pttRecognition.stop(); } catch { /* */ }
+	}
+}

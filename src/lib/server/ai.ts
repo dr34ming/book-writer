@@ -1,9 +1,231 @@
-import { getDb, type Database } from '$lib/server/db';
 import { chapters, paragraphs, projectNotes, bookTasks, sessions } from '$lib/server/db/schema';
+import { type Database } from '$lib/server/db';
 import { eq, and, desc, asc } from 'drizzle-orm';
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const MODEL = 'anthropic/claude-sonnet-4-5';
+
+// OpenAI-compatible tool definitions
+export const TOOLS = [
+	{
+		type: 'function' as const,
+		function: {
+			name: 'go_to_chapter',
+			description: 'Navigate to a chapter by its position number',
+			parameters: {
+				type: 'object',
+				properties: {
+					position: { type: 'integer', description: 'Chapter position number' }
+				},
+				required: ['position']
+			}
+		}
+	},
+	{
+		type: 'function' as const,
+		function: {
+			name: 'highlight_paragraph',
+			description: 'Highlight/select a specific paragraph in a chapter',
+			parameters: {
+				type: 'object',
+				properties: {
+					chapter_position: { type: 'integer' },
+					paragraph_position: { type: 'integer' }
+				},
+				required: ['chapter_position', 'paragraph_position']
+			}
+		}
+	},
+	{
+		type: 'function' as const,
+		function: {
+			name: 'add_paragraph',
+			description: 'Add a new paragraph to a chapter. Use [IMAGE: description] format for image placeholders.',
+			parameters: {
+				type: 'object',
+				properties: {
+					chapter_position: { type: 'integer' },
+					content: { type: 'string', description: 'The paragraph text' }
+				},
+				required: ['chapter_position', 'content']
+			}
+		}
+	},
+	{
+		type: 'function' as const,
+		function: {
+			name: 'edit_paragraph',
+			description: 'Edit an existing paragraph by replacing its content',
+			parameters: {
+				type: 'object',
+				properties: {
+					chapter_position: { type: 'integer' },
+					paragraph_position: { type: 'integer' },
+					content: { type: 'string', description: 'The new paragraph text' }
+				},
+				required: ['chapter_position', 'paragraph_position', 'content']
+			}
+		}
+	},
+	{
+		type: 'function' as const,
+		function: {
+			name: 'add_chapter',
+			description: 'Create a new chapter',
+			parameters: {
+				type: 'object',
+				properties: {
+					title: { type: 'string' }
+				},
+				required: ['title']
+			}
+		}
+	},
+	{
+		type: 'function' as const,
+		function: {
+			name: 'set_outline',
+			description: 'Set or update a chapter outline/plan',
+			parameters: {
+				type: 'object',
+				properties: {
+					chapter_position: { type: 'integer' },
+					content: { type: 'string' }
+				},
+				required: ['chapter_position', 'content']
+			}
+		}
+	},
+	{
+		type: 'function' as const,
+		function: {
+			name: 'add_task',
+			description: 'Add a task/TODO item',
+			parameters: {
+				type: 'object',
+				properties: {
+					content: { type: 'string' },
+					chapter_position: { type: 'integer', description: 'Optional — associate with a chapter' }
+				},
+				required: ['content']
+			}
+		}
+	},
+	{
+		type: 'function' as const,
+		function: {
+			name: 'complete_task',
+			description: 'Mark a task as done',
+			parameters: {
+				type: 'object',
+				properties: {
+					task_id: { type: 'integer' }
+				},
+				required: ['task_id']
+			}
+		}
+	},
+	{
+		type: 'function' as const,
+		function: {
+			name: 'move_paragraph',
+			description: 'Move a paragraph to a new position within its chapter',
+			parameters: {
+				type: 'object',
+				properties: {
+					chapter_position: { type: 'integer' },
+					paragraph_position: { type: 'integer', description: 'Current position' },
+					new_position: { type: 'integer' }
+				},
+				required: ['chapter_position', 'paragraph_position', 'new_position']
+			}
+		}
+	},
+	{
+		type: 'function' as const,
+		function: {
+			name: 'set_user_instructions',
+			description: 'Update the project instructions/preferences. Replaces the entire text.',
+			parameters: {
+				type: 'object',
+				properties: {
+					content: { type: 'string' }
+				},
+				required: ['content']
+			}
+		}
+	},
+	{
+		type: 'function' as const,
+		function: {
+			name: 'download_chapter',
+			description: 'Download a single chapter as PDF or Markdown',
+			parameters: {
+				type: 'object',
+				properties: {
+					chapter_position: { type: 'integer' },
+					format: { type: 'string', enum: ['pdf', 'md'], description: 'Default: pdf' }
+				},
+				required: ['chapter_position']
+			}
+		}
+	},
+	{
+		type: 'function' as const,
+		function: {
+			name: 'download_book',
+			description: 'Download the entire book as PDF or Markdown',
+			parameters: {
+				type: 'object',
+				properties: {
+					format: { type: 'string', enum: ['pdf', 'md'], description: 'Default: pdf' }
+				}
+			}
+		}
+	},
+	{
+		type: 'function' as const,
+		function: {
+			name: 'wrap_session',
+			description: 'Wrap up the current session and save a summary for next time',
+			parameters: {
+				type: 'object',
+				properties: {
+					summary: { type: 'string', description: 'Brief summary of what was discussed/accomplished' }
+				},
+				required: ['summary']
+			}
+		}
+	},
+	{
+		type: 'function' as const,
+		function: {
+			name: 'new_session',
+			description: 'End the current session and start a fresh one',
+			parameters: {
+				type: 'object',
+				properties: {
+					summary: { type: 'string', description: 'Summary of the session being ended' }
+				},
+				required: ['summary']
+			}
+		}
+	},
+	{
+		type: 'function' as const,
+		function: {
+			name: 'save_note',
+			description: 'Save a private note to yourself for future sessions. The user will not see this.',
+			parameters: {
+				type: 'object',
+				properties: {
+					note: { type: 'string' }
+				},
+				required: ['note']
+			}
+		}
+	}
+];
 
 export function defaultSystemPrompt(): string {
 	return `You are a warm, supportive book writing partner and virtual publisher.
@@ -24,53 +246,9 @@ Guidelines:
 - When the author shares content, acknowledge it warmly before asking follow-ups
 - This is THEIR book — help them express their vision, not yours
 - Be encouraging but honest
-
-## Tools
-
-You can take actions in the UI by including action tags in your response. They will be stripped from what the user sees and executed automatically.
-
-Available actions:
-
-**Navigate to a chapter:**
-<<ACTION: {"tool": "go_to_chapter", "position": 2}>>
-
-**Highlight/select a paragraph:**
-<<ACTION: {"tool": "highlight_paragraph", "chapter_position": 1, "paragraph_position": 3}>>
-
-**Add a paragraph to a chapter:**
-<<ACTION: {"tool": "add_paragraph", "chapter_position": 1, "content": "The paragraph text goes here."}>>
-
-**Edit an existing paragraph:**
-<<ACTION: {"tool": "edit_paragraph", "chapter_position": 1, "paragraph_position": 2, "content": "The updated text."}>>
-
-**Create a new chapter:**
-<<ACTION: {"tool": "add_chapter", "title": "Chapter Title Here"}>>
-
-**Set a chapter outline/plan:**
-<<ACTION: {"tool": "set_outline", "chapter_position": 1, "content": "The outline text..."}>>
-
-**Add a task/TODO:**
-<<ACTION: {"tool": "add_task", "content": "Research historical context for Ch 3", "chapter_position": null}>>
-chapter_position is optional — set it to associate the task with a chapter, or null for general tasks.
-
-**Complete a task:**
-<<ACTION: {"tool": "complete_task", "task_id": 123}>>
-
-**Update project instructions (preferences, rules, style guides):**
-<<ACTION: {"tool": "set_user_instructions", "content": "The full updated instructions text goes here"}>>
-This replaces the entire user instructions. Read the current ones first, then append or modify as needed.
-
-**Download a chapter:**
-<<ACTION: {"tool": "download_chapter", "chapter_position": 1, "format": "pdf"}>>
-format is "pdf" or "md" (markdown). Default is pdf.
-
-**Download the entire book:**
-<<ACTION: {"tool": "download_book", "format": "pdf"}>>
-
-**Wrap up the session (save a summary for next time):**
-<<ACTION: {"tool": "wrap_session", "summary": "We worked on chapters 1-3, decided on first-person POV..."}>>
-
-Use these when the user asks you to navigate ("go to chapter 6"), add content ("write that down"), edit content ("change paragraph 3 to say..."), organize ("create a new chapter for recipes"), or export ("download chapter 3 as PDF"). You can include multiple actions in one response.
+- Use tools to take actions — navigate, add content, edit, organize, download, etc.
+- You can call multiple tools in one response
+- Use save_note to remember things between sessions (the user won't see these)
 
 ## Image & Diagram Placeholders
 
@@ -79,13 +257,7 @@ To mark where an image or diagram should go, add a paragraph with the format:
 
 For example: [IMAGE: Photo of the finished mushroom cultivation setup with labels]
 
-These render as visual placeholder blocks in the manuscript. Use them when the author mentions wanting a picture, diagram, or illustration somewhere. You can also proactively suggest them when content would benefit from a visual.
-
-## Notes
-
-You can save notes for yourself between sessions:
-<<NOTE_TO_SELF: your note here>>
-These are stripped from what the user sees but saved for future context.`;
+These render as visual placeholder blocks in the manuscript. Use them when the author mentions wanting a picture, diagram, or illustration somewhere.`;
 }
 
 export async function buildSystemPrompt(db: Database, bookId: number): Promise<string> {
@@ -133,8 +305,7 @@ export async function buildSystemPrompt(db: Database, bookId: number): Promise<s
 
 	const shouldRemind = !lastReminder?.value || lastReminder.value < today;
 	if (shouldRemind) {
-		prompt += `\n\n## Feedback Reminder\nThis is the first message today. Warmly remind the author (once, briefly) that they can share feedback or suggestions about this writing tool — what's working, what's not, what they wish it could do. Keep it to one sentence, woven naturally into your greeting. After this reminder, save a note so you don't remind again today.`;
-		// Update the reminder date
+		prompt += `\n\n## Feedback Reminder\nThis is the first message today. Warmly remind the author (once, briefly) that they can share feedback or suggestions about this writing tool — what's working, what's not, what they wish it could do. Keep it to one sentence, woven naturally into your greeting. After this reminder, use save_note so you don't remind again today.`;
 		if (lastReminder) {
 			await db
 				.update(projectNotes)
@@ -181,7 +352,6 @@ export async function buildSystemPrompt(db: Database, bookId: number): Promise<s
 		.orderBy(asc(bookTasks.created_at));
 
 	if (tasks.length > 0) {
-		// Get chapter positions for tasks with chapter_id
 		const taskLines = await Promise.all(
 			tasks.map(async (t) => {
 				let chTag = '';
@@ -208,7 +378,6 @@ export async function buildSystemPrompt(db: Database, bookId: number): Promise<s
 		.limit(2);
 
 	if (sessionRows.length >= 2) {
-		// The current session is first, previous is second
 		const prevSession = sessionRows[1];
 		if (prevSession.summary) {
 			prompt += `\n\n## Previous Session Summary\n${prevSession.summary}`;
@@ -218,11 +387,16 @@ export async function buildSystemPrompt(db: Database, bookId: number): Promise<s
 	return prompt;
 }
 
+// Stream events from OpenRouter
+export type StreamEvent =
+	| { type: 'text'; content: string }
+	| { type: 'tool_calls'; calls: Array<{ name: string; arguments: Record<string, unknown> }> };
+
 export async function* streamChat(
 	messages: { role: string; content: string }[],
 	systemPrompt: string,
 	apiKey: string
-): AsyncGenerator<string> {
+): AsyncGenerator<StreamEvent> {
 	const fullMessages = [{ role: 'system', content: systemPrompt }, ...messages];
 
 	const response = await fetch(OPENROUTER_URL, {
@@ -234,7 +408,8 @@ export async function* streamChat(
 		body: JSON.stringify({
 			model: MODEL,
 			messages: fullMessages,
-			max_tokens: 1024,
+			tools: TOOLS,
+			max_tokens: 4096,
 			stream: true
 		})
 	});
@@ -248,6 +423,9 @@ export async function* streamChat(
 	const decoder = new TextDecoder();
 	let buffer = '';
 
+	// Accumulate tool calls across chunks
+	const toolCallMap = new Map<number, { name: string; arguments: string }>();
+
 	while (true) {
 		const { done, value } = await reader.read();
 		if (done) break;
@@ -259,15 +437,51 @@ export async function* streamChat(
 		for (const line of lines) {
 			if (!line.startsWith('data: ')) continue;
 			const data = line.slice(6).trim();
-			if (data === '[DONE]') return;
+			if (data === '[DONE]') break;
 
 			try {
 				const parsed = JSON.parse(data);
-				const content = parsed.choices?.[0]?.delta?.content;
-				if (content) yield content;
+				const delta = parsed.choices?.[0]?.delta;
+				if (!delta) continue;
+
+				// Text content
+				if (delta.content) {
+					yield { type: 'text', content: delta.content };
+				}
+
+				// Tool calls (streamed as chunks)
+				if (delta.tool_calls) {
+					for (const tc of delta.tool_calls) {
+						const idx = tc.index ?? 0;
+						if (!toolCallMap.has(idx)) {
+							toolCallMap.set(idx, { name: '', arguments: '' });
+						}
+						const entry = toolCallMap.get(idx)!;
+						if (tc.function?.name) entry.name = tc.function.name;
+						if (tc.function?.arguments) entry.arguments += tc.function.arguments;
+					}
+				}
 			} catch {
 				// skip malformed chunks
 			}
+		}
+	}
+
+	// Yield accumulated tool calls at the end
+	if (toolCallMap.size > 0) {
+		const calls = [...toolCallMap.values()]
+			.filter(tc => tc.name)
+			.map(tc => {
+				try {
+					return { name: tc.name, arguments: JSON.parse(tc.arguments) as Record<string, unknown> };
+				} catch {
+					return null;
+				}
+			})
+			.filter((tc): tc is NonNullable<typeof tc> => tc !== null);
+
+		if (calls.length > 0) {
+			yield { type: 'tool_calls', calls };
 		}
 	}
 }

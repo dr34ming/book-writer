@@ -3,7 +3,7 @@
 	import type { Chapter, Paragraph, BookTask, AIAction } from '$lib/types';
 	import { executeActions, summarizeAction, type PageState } from '$lib/actions';
 	import { downloadMarkdown, downloadPdf, type DownloadChapter } from '$lib/download';
-	import { startListening, pauseListening, stopListening, stopSpeaking, queueSentence, flushQueue, isSpeaking } from '$lib/voice';
+	import { startListening, pauseListening, stopListening, stopSpeaking, queueSentence, flushQueue, isSpeaking, pttStart, pttStop } from '$lib/voice';
 
 	let { data }: { data: PageData } = $props();
 
@@ -36,8 +36,8 @@
 	let currentUser = $state(data.user?.username ?? '');
 
 	// UI state
-	let voiceOn = $state(false);
-	let muted = $state(false);
+	let voiceMode = $state<'off' | 'ptt' | 'live'>('off');
+	let pttActive = $state(false);
 	let aiLoading = $state(false);
 	let aiSpeaking = $state(false);
 	let abortController: AbortController | null = null;
@@ -53,7 +53,7 @@
 		stopSpeaking();
 		aiLoading = false;
 		aiSpeaking = false;
-		if (voiceOn && !muted) {
+		if (voiceMode === 'live') {
 			startListening((text) => sendMessage(text));
 		}
 	}
@@ -111,7 +111,7 @@
 
 	// Voice effects
 	$effect(() => {
-		if (voiceOn && !muted) {
+		if (voiceMode === 'live') {
 			startListening((text) => sendMessage(text));
 		} else {
 			pauseListening();
@@ -119,11 +119,49 @@
 	});
 
 	$effect(() => {
-		if (!voiceOn) {
+		if (voiceMode === 'off') {
 			stopListening();
 			stopSpeaking();
 		}
 	});
+
+	// PTT: spacebar hold-to-talk (only when not focused on text input)
+	function handlePttKeydown(e: KeyboardEvent) {
+		if (voiceMode !== 'ptt' || pttActive) return;
+		if (e.code !== 'Space') return;
+		const tag = (e.target as HTMLElement).tagName;
+		if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement).isContentEditable) return;
+		e.preventDefault();
+		pttActive = true;
+		pttStart((text) => sendMessage(text));
+	}
+
+	function handlePttKeyup(e: KeyboardEvent) {
+		if (voiceMode !== 'ptt' || !pttActive) return;
+		if (e.code !== 'Space') return;
+		e.preventDefault();
+		pttActive = false;
+		pttStop();
+	}
+
+	$effect(() => {
+		if (voiceMode === 'ptt') {
+			window.addEventListener('keydown', handlePttKeydown);
+			window.addEventListener('keyup', handlePttKeyup);
+			return () => {
+				window.removeEventListener('keydown', handlePttKeydown);
+				window.removeEventListener('keyup', handlePttKeyup);
+			};
+		}
+	});
+
+	function setVoiceMode(mode: 'off' | 'ptt' | 'live') {
+		if (pttActive) {
+			pttActive = false;
+			pttStop();
+		}
+		voiceMode = mode;
+	}
 
 	// Auto-scroll chat
 	$effect(() => {
@@ -208,7 +246,7 @@
 								);
 							}
 							// Fire first sentence to TTS as soon as it's complete
-							if (voiceOn && !muted && !firstSentenceSent) {
+							if (voiceMode !== 'off' && !firstSentenceSent) {
 								const match = fullContent.match(/[.!?]\s/);
 								if (match && match.index !== undefined) {
 									firstSentenceEnd = match.index + 1;
@@ -284,7 +322,7 @@
 			abortController = null;
 
 			// TTS: send remainder (everything after first sentence) as one chunk
-			if (voiceOn && !muted) {
+			if (voiceMode !== 'off') {
 				if (firstSentenceSent && firstSentenceEnd < fullContent.length) {
 					const remainder = fullContent.slice(firstSentenceEnd).trim();
 					if (remainder) queueSentence(remainder);
@@ -294,7 +332,7 @@
 				}
 				flushQueue(() => {
 					aiSpeaking = false;
-					if (voiceOn && !muted) {
+					if (voiceMode === 'live') {
 						startListening((text) => sendMessage(text));
 					}
 				});
@@ -611,6 +649,11 @@
 					</svg>
 				</button>
 			</div>
+			<a href="/mobile" class="btn btn-ghost btn-xs text-base-content/40" title="Mobile view">
+				<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" />
+				</svg>
+			</a>
 			<button onclick={logout} class="btn btn-ghost btn-xs text-base-content/40 hover:text-error" title="Log out ({currentUser})">
 				<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
@@ -697,17 +740,36 @@
 		<div class="flex-1 overflow-y-auto p-4 space-y-4" bind:this={chatContainer}>
 			{#if messages.length === 0}
 				<div class="flex flex-col items-center justify-center flex-1 text-base-content/40">
-					<p class="text-lg">Ready when you are.</p>
-					<button
-						type="button"
-						onclick={() => { voiceOn = !voiceOn; if (!voiceOn) muted = false; }}
-						class="btn btn-circle w-24 h-24 mt-6 mb-4 transition-all {voiceOn && !muted ? 'btn-success voice-active' : voiceOn && muted ? 'btn-warning voice-muted' : 'btn-neutral'}"
-					>
-						<svg xmlns="http://www.w3.org/2000/svg" class="h-10 w-10" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-14 0m7 7v4m-4 0h8M12 1a3 3 0 00-3 3v7a3 3 0 006 0V4a3 3 0 00-3-3z" />
-						</svg>
-					</button>
-					<p class="text-sm">or type below</p>
+					<p class="text-lg mb-4">Ready when you are.</p>
+					<!-- Voice Mode Selector (hero) -->
+					<div class="join mb-6">
+						<button type="button" class="join-item btn btn-sm {voiceMode === 'off' ? 'btn-active' : ''}" onclick={() => setVoiceMode('off')}>Off</button>
+						<button type="button" class="join-item btn btn-sm {voiceMode === 'ptt' ? 'btn-active btn-warning' : ''}" onclick={() => setVoiceMode('ptt')}>Push to Talk</button>
+						<button type="button" class="join-item btn btn-sm {voiceMode === 'live' ? 'btn-active btn-success' : ''}" onclick={() => setVoiceMode('live')}>Live</button>
+					</div>
+					{#if voiceMode === 'ptt'}
+						<button
+							type="button"
+							class="btn btn-circle w-24 h-24 transition-all ptt-touch {pttActive ? 'btn-error voice-active scale-110' : 'btn-warning'}"
+							onpointerdown={() => { pttActive = true; pttStart((text) => sendMessage(text)); }}
+							onpointerup={() => { pttActive = false; pttStop(); }}
+							onpointerleave={() => { if (pttActive) { pttActive = false; pttStop(); } }}
+						>
+							<svg xmlns="http://www.w3.org/2000/svg" class="h-10 w-10" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-14 0m7 7v4m-4 0h8M12 1a3 3 0 00-3 3v7a3 3 0 006 0V4a3 3 0 00-3-3z" />
+							</svg>
+						</button>
+						<p class="text-sm mt-3">{pttActive ? 'Listening...' : 'Hold to talk, or press Space'}</p>
+					{:else if voiceMode === 'live'}
+						<div class="btn btn-circle w-24 h-24 btn-success voice-active pointer-events-none">
+							<svg xmlns="http://www.w3.org/2000/svg" class="h-10 w-10" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-14 0m7 7v4m-4 0h8M12 1a3 3 0 00-3 3v7a3 3 0 006 0V4a3 3 0 00-3-3z" />
+							</svg>
+						</div>
+						<p class="text-sm mt-3 text-success">Always listening</p>
+					{:else}
+						<p class="text-sm">Type below or enable voice</p>
+					{/if}
 				</div>
 			{/if}
 			{#each messages as msg, i (i)}
@@ -743,63 +805,65 @@
 		<!-- Input Bar -->
 		<div class="border-t border-base-300 p-3">
 			<form onsubmit={handleSend} class="flex items-center gap-2">
-				<!-- Voice Toggle -->
-				<button
-					type="button"
-					onclick={() => { voiceOn = !voiceOn; if (!voiceOn) muted = false; }}
-					class="btn btn-circle btn-lg transition-all {voiceOn && !muted ? 'btn-success voice-active' : voiceOn && muted ? 'btn-warning voice-muted' : 'btn-neutral'}"
-					title={voiceOn ? 'Voice On' : 'Voice Off'}
-				>
-					<svg xmlns="http://www.w3.org/2000/svg" class="h-7 w-7" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-					</svg>
-				</button>
+				<!-- Voice Mode Selector -->
+				<div class="join">
+					<button type="button" class="join-item btn btn-xs {voiceMode === 'off' ? 'btn-active' : ''}" onclick={() => setVoiceMode('off')} title="Voice off">
+						<svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />
+						</svg>
+					</button>
+					<button type="button" class="join-item btn btn-xs {voiceMode === 'ptt' ? 'btn-active btn-warning' : ''}" onclick={() => setVoiceMode('ptt')} title="Push to talk">PTT</button>
+					<button type="button" class="join-item btn btn-xs {voiceMode === 'live' ? 'btn-active btn-success' : ''}" onclick={() => setVoiceMode('live')} title="Always listening">
+						<svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+						</svg>
+					</button>
+				</div>
 
-				<!-- Mute -->
-				{#if voiceOn}
+				<!-- PTT Hold Button -->
+				{#if voiceMode === 'ptt'}
 					<button
 						type="button"
-						onclick={() => { muted = !muted; }}
-						class="btn btn-circle btn-sm {muted ? 'btn-warning' : 'btn-ghost'}"
-						title={muted ? 'Resume' : 'Pause'}
+						class="btn btn-circle btn-sm transition-all ptt-touch {pttActive ? 'btn-error voice-active' : 'btn-warning'}"
+						onpointerdown={() => { pttActive = true; pttStart((text) => sendMessage(text)); }}
+						onpointerup={() => { pttActive = false; pttStop(); }}
+						onpointerleave={() => { if (pttActive) { pttActive = false; pttStop(); } }}
+						title="Hold to talk"
 					>
-						{#if muted}
-							<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="currentColor" viewBox="0 0 24 24">
-								<path d="M8 5v14l11-7z" />
-							</svg>
-						{:else}
-							<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="currentColor" viewBox="0 0 24 24">
-								<path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" />
-							</svg>
-						{/if}
+						<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+						</svg>
 					</button>
 				{/if}
 
-				<!-- Turn Indicator -->
+				<!-- Status Indicator -->
 				{#if aiSpeaking}
 					<span class="text-xs text-info font-medium flex items-center gap-1">
 						<span class="loading loading-ring loading-xs"></span>
-						Speaking...
+						Speaking
 					</span>
 				{:else if aiLoading}
 					<span class="text-xs text-base-content/50 font-medium flex items-center gap-1">
 						<span class="loading loading-dots loading-xs"></span>
-						Thinking...
 					</span>
-				{:else if voiceOn && !muted}
+				{:else if pttActive}
+					<span class="text-xs text-error font-medium flex items-center gap-1">
+						<span class="inline-block w-2 h-2 rounded-full bg-error animate-pulse"></span>
+						Recording
+					</span>
+				{:else if voiceMode === 'live'}
 					<span class="text-xs text-success font-medium flex items-center gap-1">
 						<span class="inline-block w-2 h-2 rounded-full bg-success animate-pulse"></span>
-						Your turn
+						Listening
 					</span>
-				{:else if voiceOn && muted}
-					<span class="text-xs text-warning font-medium">Paused</span>
 				{/if}
 
 				<!-- Text Input -->
 				<input
 					type="text"
 					bind:value={inputText}
-					placeholder={aiSpeaking ? 'AI is speaking...' : aiLoading ? 'AI is thinking...' : voiceOn && !muted ? 'Listening... (your turn)' : voiceOn && muted ? 'Paused' : 'Type a message...'}
+					placeholder={aiSpeaking ? 'Speaking...' : aiLoading ? 'Thinking...' : pttActive ? 'Recording...' : voiceMode === 'live' ? 'Listening...' : 'Type a message...'}
 					class="input input-bordered input-sm flex-1"
 					autocomplete="off"
 				/>
@@ -809,7 +873,7 @@
 	</div>
 
 	<!-- MIDDLE: Chapters Nav -->
-	<div class="w-[220px] flex flex-col border-r border-base-300 bg-base-100">
+	<div class="w-[180px] flex flex-col border-r border-base-300 bg-base-100">
 		<div class="p-3 border-b border-base-300">
 			<div class="flex items-center justify-between">
 				<h3 class="font-semibold text-sm">{book.title}</h3>
@@ -870,6 +934,35 @@
 			</form>
 		</div>
 	</div>
+
+	<!-- PARAGRAPHS Nav -->
+	{#if !viewAll}
+	<div class="w-[180px] flex flex-col border-r border-base-300 bg-base-100">
+		<div class="px-3 py-2 border-b border-base-300">
+			<h3 class="font-semibold text-xs text-base-content/60 uppercase tracking-wide">Paragraphs</h3>
+		</div>
+		<div class="flex-1 overflow-y-auto">
+			{#if paragraphs.length === 0}
+				<div class="px-3 py-4 text-xs text-base-content/30 italic">No paragraphs yet</div>
+			{/if}
+			{#each paragraphs as para (para.id)}
+				<button
+					onclick={() => { selectedParagraph = para.id; scrollToAndFlash(para.id); }}
+					class="w-full text-left px-3 py-1.5 hover:bg-base-200 transition-colors {selectedParagraph === para.id ? 'bg-primary/10 border-l-2 border-primary' : 'border-l-2 border-transparent'}"
+				>
+					<div class="flex items-start gap-1.5">
+						<span class="text-xs text-base-content/40 shrink-0 mt-0.5">{para.position}</span>
+						{#if para.content.startsWith('[IMAGE:')}
+							<span class="text-xs text-base-content/40 italic truncate">Image</span>
+						{:else}
+							<span class="text-xs text-base-content/70 line-clamp-2">{para.content.slice(0, 80)}</span>
+						{/if}
+					</div>
+				</button>
+			{/each}
+		</div>
+	</div>
+	{/if}
 
 	<!-- RIGHT: Manuscript -->
 	<main class="flex-1 flex flex-col min-w-0">

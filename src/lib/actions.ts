@@ -22,33 +22,35 @@ type StateUpdater = (fn: (state: PageState) => Partial<PageState>) => void;
 export function summarizeAction(action: AIAction): string {
 	switch (action.tool) {
 		case 'go_to_chapter':
-			return `Navigated to chapter ${action.position}`;
+			return 'Switched chapters';
 		case 'highlight_paragraph':
-			return `Highlighted paragraph ${action.paragraph_position} in chapter ${action.chapter_position}`;
+			return 'Highlighted a paragraph';
 		case 'add_paragraph':
-			return `Added a paragraph to chapter ${action.chapter_position}`;
+			return 'Added a paragraph';
 		case 'edit_paragraph':
-			return `Edited paragraph ${action.paragraph_position} in chapter ${action.chapter_position}`;
+			return 'Edited a paragraph';
 		case 'add_chapter':
-			return `Created chapter: ${action.title}`;
+			return `Created a chapter`;
 		case 'set_outline':
-			return `Updated outline for chapter ${action.chapter_position}`;
+			return 'Updated the outline';
 		case 'add_task':
-			return `Added task: ${action.content}`;
+			return 'Added a task';
 		case 'complete_task':
-			return `Completed task #${action.task_id}`;
+			return 'Completed a task';
 		case 'wrap_session':
-			return `Wrapped up the session`;
+			return 'Wrapped up the session';
+		case 'new_session':
+			return 'Started a new session';
 		case 'move_paragraph':
-			return `Moved paragraph ${action.paragraph_position} in chapter ${action.chapter_position} to position ${action.new_position}`;
+			return 'Moved a paragraph';
 		case 'download_chapter':
-			return `Downloaded chapter ${action.chapter_position} as ${action.format ?? 'pdf'}`;
+			return 'Downloaded a chapter';
 		case 'download_book':
-			return `Downloaded the full book as ${action.format ?? 'pdf'}`;
+			return 'Downloaded the book';
 		case 'set_user_instructions':
-			return `Updated project instructions`;
+			return 'Updated project instructions';
 		default:
-			return `Performed action: ${action.tool}`;
+			return action.tool.replace(/_/g, ' ');
 	}
 }
 
@@ -338,6 +340,34 @@ async function executeAction(
 					session: data.session,
 					messages: [],
 					previousSessionSummary: summary
+				}));
+			}
+			break;
+		}
+		case 'new_session': {
+			// Wrap current session first (if there are messages), then start fresh
+			if (state.messages.filter(m => m.role !== 'action').length > 0) {
+				await fetch(`/api/sessions/${state.session.id}/wrap`, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({
+						summary: (action.summary as string) ?? 'Session ended by AI.',
+						book_id: state.bookId
+					})
+				});
+			}
+			// Create new session
+			const resp = await fetch('/api/sessions', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ book_id: state.bookId })
+			});
+			if (resp.ok) {
+				const data = await resp.json() as any;
+				update(() => ({
+					session: data.session,
+					messages: [],
+					previousSessionSummary: (action.summary as string) ?? null
 				}));
 			}
 			break;

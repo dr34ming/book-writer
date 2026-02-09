@@ -3,7 +3,6 @@ import type { RequestHandler } from './$types';
 import { getDb } from '$lib/server/db';
 import { messages as messagesTable, projectNotes } from '$lib/server/db/schema';
 import { buildSystemPrompt, streamChat } from '$lib/server/ai';
-import { extractActions, extractNotes } from '$lib/server/ai-actions';
 import { eq, and } from 'drizzle-orm';
 import { env } from '$env/dynamic/private';
 import { logEvent } from '$lib/server/events';
@@ -57,93 +56,81 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 
 				let fullContent = '';
 
-				for await (const token of streamChat(messages, systemPrompt, apiKey)) {
-					fullContent += token;
-					controller.enqueue(
-						encoder.encode(`data: ${JSON.stringify({ type: 'token', content: token })}\n\n`)
-					);
-				}
+				for await (const event of streamChat(messages, systemPrompt, apiKey)) {
+					if (event.type === 'text') {
+						fullContent += event.content;
+						controller.enqueue(
+							encoder.encode(`data: ${JSON.stringify({ type: 'token', content: event.content })}\n\n`)
+						);
+					} else if (event.type === 'tool_calls') {
+						// Separate save_note calls from UI actions
+						const uiActions = [];
+						for (const call of event.calls) {
+							if (call.name === 'save_note') {
+								// Handle save_note server-side
+								const note = call.arguments.note as string;
+								if (note) {
+									const [existing] = await db
+										.select()
+										.from(projectNotes)
+										.where(
+											and(
+												eq(projectNotes.book_id, book_id),
+												eq(projectNotes.key, 'ai_instructions')
+											)
+										)
+										.limit(1);
 
-				// Process complete response
-				const { clean: afterNotes, notes } = extractNotes(fullContent);
-				const { clean: cleanContent, actions } = extractActions(afterNotes);
+									if (existing) {
+										const newValue = existing.value ? `${existing.value}\n${note}` : note;
+										await db.update(projectNotes).set({ value: newValue }).where(eq(projectNotes.id, existing.id));
+									} else {
+										await db.insert(projectNotes).values({ book_id, key: 'ai_instructions', value: note });
+									}
 
-				// Save notes to DB
-				if (notes.length > 0 && book_id) {
-					for (const note of notes) {
-						// Get existing ai_instructions and append
-						const [existing] = await db
-							.select()
-							.from(projectNotes)
-							.where(
-								and(
-									eq(projectNotes.book_id, book_id),
-									eq(projectNotes.key, 'ai_instructions')
-								)
-							)
-							.limit(1);
+									// Send updated notes to client
+									const [updated] = await db
+										.select()
+										.from(projectNotes)
+										.where(and(eq(projectNotes.book_id, book_id), eq(projectNotes.key, 'ai_instructions')))
+										.limit(1);
+									controller.enqueue(
+										encoder.encode(`data: ${JSON.stringify({ type: 'ai_notes', value: updated?.value })}\n\n`)
+									);
+								}
+							} else {
+								// Convert to action format: { tool: name, ...arguments }
+								uiActions.push({ tool: call.name, ...call.arguments });
+							}
+						}
 
-						if (existing) {
-							const newValue = existing.value ? `${existing.value}\n${note}` : note;
-							await db
-								.update(projectNotes)
-								.set({ value: newValue })
-								.where(eq(projectNotes.id, existing.id));
-						} else {
-							await db.insert(projectNotes).values({
-								book_id,
-								key: 'ai_instructions',
-								value: note
-							});
+						// Send UI actions to client
+						if (uiActions.length > 0) {
+							controller.enqueue(
+								encoder.encode(`data: ${JSON.stringify({ type: 'actions', actions: uiActions })}\n\n`)
+							);
 						}
 					}
-
-					// Send updated ai notes
-					const [updated] = await db
-						.select()
-						.from(projectNotes)
-						.where(
-							and(
-								eq(projectNotes.book_id, book_id),
-								eq(projectNotes.key, 'ai_instructions')
-							)
-						)
-						.limit(1);
-					controller.enqueue(
-						encoder.encode(
-							`data: ${JSON.stringify({ type: 'ai_notes', value: updated?.value })}\n\n`
-						)
-					);
 				}
 
-				// Persist assistant message (clean version)
+				// Persist assistant message
 				await db.insert(messagesTable).values({
 					session_id,
 					role: 'assistant',
-					content: cleanContent
+					content: fullContent
 				});
 
-				// Log chat event with full snapshot
-				const chatSnapshot = [...messages, { role: 'assistant', content: cleanContent }];
+				// Log chat event
+				const chatSnapshot = [...messages, { role: 'assistant', content: fullContent }];
 				await logEvent(db, {
 					book_id,
 					session_id,
 					action: 'chat_message',
 					entity_type: 'session',
 					entity_id: session_id,
-					after_state: { actions: actions.length > 0 ? actions : undefined },
 					chat_snapshot: chatSnapshot,
 					source: 'ai'
 				});
-
-				// Send actions if any
-				if (actions.length > 0) {
-					controller.enqueue(
-						encoder.encode(
-							`data: ${JSON.stringify({ type: 'actions', actions })}\n\n`
-						)
-					);
-				}
 
 				controller.enqueue(encoder.encode('data: [DONE]\n\n'));
 			} catch (err) {
