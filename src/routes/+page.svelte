@@ -61,6 +61,20 @@
 	let selectedParagraph = $state<number | null>(null);
 	let editingParagraph = $state<number | null>(null);
 	let editingOutline = $state(false);
+	let viewAll = $state(false);
+	let allChapterData = $state<Array<{ chapter: typeof currentChapter; paragraphs: typeof paragraphs }>>([]);
+
+	async function loadAllChapters() {
+		viewAll = true;
+		const results = [];
+		for (const ch of chapters) {
+			const resp = await fetch(`/api/chapters/${ch.id}`);
+			if (!resp.ok) continue;
+			const data = await resp.json() as any;
+			results.push({ chapter: data.chapter, paragraphs: data.chapter.paragraphs ?? [] });
+		}
+		allChapterData = results;
+	}
 	let showSettings = $state(false);
 	let showTasks = $state(false);
 
@@ -348,6 +362,7 @@
 
 	// Chapter navigation
 	async function selectChapter(id: number) {
+		viewAll = false;
 		const resp = await fetch(`/api/chapters/${id}`);
 		if (!resp.ok) return;
 		const data = await resp.json() as any;
@@ -547,59 +562,47 @@
 	<!-- LEFT: Chat / Conversation -->
 	<div class="w-[380px] flex flex-col border-r border-base-300 bg-base-200">
 		<!-- Header -->
-		<div class="p-4 border-b border-base-300">
-			<div class="flex items-center justify-between">
-				<h2 class="font-bold text-lg">{book.title}</h2>
-				<div class="flex items-center gap-2">
-					<button
-						onclick={() => (showTasks = !showTasks)}
-						class="btn btn-ghost btn-xs"
-						title="Tasks"
-					>
-						<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
-						</svg>
-						{#if tasks.length > 0}
-							<span class="badge badge-xs badge-primary">{tasks.length}</span>
-						{/if}
-					</button>
-					{#if messages.length > 0}
-						<button
-							onclick={wrapSession}
-							class="btn btn-ghost btn-xs"
-							title="Wrap up session"
-						>
-							<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
-							</svg>
-						</button>
+		<div class="px-3 py-2 border-b border-base-300 flex items-center justify-between">
+			<div class="flex items-center gap-2">
+				<button
+					onclick={() => (showTasks = !showTasks)}
+					class="btn btn-ghost btn-xs"
+					title="Tasks"
+				>
+					<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+					</svg>
+					{#if tasks.length > 0}
+						<span class="badge badge-xs badge-primary">{tasks.length}</span>
 					{/if}
+				</button>
+				{#if messages.length > 0}
 					<button
-						onclick={() => (showSettings = !showSettings)}
+						onclick={wrapSession}
 						class="btn btn-ghost btn-xs"
-						title="Settings"
+						title="Wrap up session"
 					>
 						<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
 						</svg>
 					</button>
-					<button onclick={logout} class="badge badge-sm badge-ghost cursor-pointer hover:badge-error" title="Log out">{currentUser} &times;</button>
-				</div>
-			</div>
-			<div class="flex items-center gap-3 mt-1">
-				<span class="text-sm text-base-content/60">{wordCount.toLocaleString()} words</span>
-				{#if contextStats}
-					<span class="text-xs text-base-content/30" title="System: {contextStats.systemTokens.toLocaleString()}  Chat: {contextStats.chatTokens.toLocaleString()}">
-						{(contextStats.totalTokens / 1000).toFixed(1)}k / {contextStats.modelMax / 1000}k tokens
-					</span>
-					<progress
-						class="progress progress-xs w-16 {contextStats.totalTokens / contextStats.modelMax > 0.8 ? 'progress-warning' : contextStats.totalTokens / contextStats.modelMax > 0.95 ? 'progress-error' : 'progress-info'}"
-						value={contextStats.totalTokens}
-						max={contextStats.modelMax}
-					></progress>
 				{/if}
+				<button
+					onclick={() => (showSettings = !showSettings)}
+					class="btn btn-ghost btn-xs"
+					title="Settings"
+				>
+					<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.11 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+					</svg>
+				</button>
 			</div>
+			<button onclick={logout} class="btn btn-ghost btn-xs text-base-content/40 hover:text-error" title="Log out ({currentUser})">
+				<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+				</svg>
+			</button>
 		</div>
 
 		<!-- Settings Panel -->
@@ -794,25 +797,46 @@
 
 	<!-- MIDDLE: Chapters Nav -->
 	<div class="w-[220px] flex flex-col border-r border-base-300 bg-base-100">
-		<div class="p-3 border-b border-base-300 flex items-center justify-between">
-			<h3 class="font-semibold text-sm">Chapters</h3>
-			<div class="flex items-center gap-1">
-				<select bind:value={downloadFormat} class="select select-xs w-14 min-h-0 h-6 text-xs">
-					<option value="pdf">PDF</option>
-					<option value="md">MD</option>
-				</select>
-				<button onclick={downloadBook} class="btn btn-ghost btn-xs" title="Download book">
-					<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-					</svg>
-				</button>
+		<div class="p-3 border-b border-base-300">
+			<div class="flex items-center justify-between">
+				<h3 class="font-semibold text-sm">{book.title}</h3>
+				<div class="flex items-center gap-1">
+					<select bind:value={downloadFormat} class="select select-xs w-14 min-h-0 h-6 text-xs">
+						<option value="pdf">PDF</option>
+						<option value="md">MD</option>
+					</select>
+					<button onclick={downloadBook} class="btn btn-ghost btn-xs" title="Download book">
+						<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+						</svg>
+					</button>
+				</div>
+			</div>
+			<div class="flex items-center gap-2 mt-1">
+				<span class="text-xs text-base-content/40">{wordCount.toLocaleString()} words</span>
+				{#if contextStats}
+					<span class="text-xs text-base-content/30" title="System: {contextStats.systemTokens.toLocaleString()}  Chat: {contextStats.chatTokens.toLocaleString()}">
+						{(contextStats.totalTokens / 1000).toFixed(1)}k/{contextStats.modelMax / 1000}k
+					</span>
+					<progress
+						class="progress progress-xs w-12 {contextStats.totalTokens / contextStats.modelMax > 0.8 ? 'progress-warning' : contextStats.totalTokens / contextStats.modelMax > 0.95 ? 'progress-error' : 'progress-info'}"
+						value={contextStats.totalTokens}
+						max={contextStats.modelMax}
+					></progress>
+				{/if}
 			</div>
 		</div>
 		<div class="flex-1 overflow-y-auto">
+			<button
+				onclick={loadAllChapters}
+				class="w-full text-left px-3 py-1.5 text-xs hover:bg-base-200 transition-colors {viewAll ? 'bg-primary/10 border-l-2 border-primary font-semibold' : 'border-l-2 border-transparent text-base-content/50'}"
+			>
+				View All
+			</button>
 			{#each chapters as chapter (chapter.id)}
 				<button
 					onclick={() => selectChapter(chapter.id)}
-					class="w-full text-left px-3 py-2 hover:bg-base-200 transition-colors {chapter.id === currentChapter.id ? 'bg-primary/10 border-l-2 border-primary' : 'border-l-2 border-transparent'}"
+					class="w-full text-left px-3 py-2 hover:bg-base-200 transition-colors {!viewAll && chapter.id === currentChapter.id ? 'bg-primary/10 border-l-2 border-primary' : 'border-l-2 border-transparent'}"
 				>
 					<div class="text-sm font-medium">{chapter.position}. {chapter.title}</div>
 					{#if chapter.outline}
@@ -839,6 +863,31 @@
 		<!-- Manuscript Content -->
 		<div class="flex-1 overflow-y-auto p-6" bind:this={manuscriptContainer}>
 			<div class="max-w-3xl mx-auto">
+			{#if viewAll}
+				{#each allChapterData as chData (chData.chapter.id)}
+					<h2 class="text-2xl font-bold mb-2 mt-8 first:mt-0">{chData.chapter.position}. {chData.chapter.title}</h2>
+					{#if chData.chapter.outline}
+						<p class="text-sm text-base-content/50 italic mb-4">{chData.chapter.outline}</p>
+					{/if}
+					{#each chData.paragraphs as para (para.id)}
+						<div class="mb-3">
+							{#if para.content.startsWith('[IMAGE:')}
+								<div class="border-2 border-dashed border-base-content/20 rounded-lg p-3 flex items-center gap-3 bg-base-200/50">
+									<svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-base-content/30 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+										<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+									</svg>
+									<span class="text-sm text-base-content/50 italic">{para.content.replace(/^\[IMAGE:\s*/, '').replace(/\]$/, '')}</span>
+								</div>
+							{:else}
+								<p class="leading-relaxed">{para.content}</p>
+							{/if}
+						</div>
+					{/each}
+					{#if chData.paragraphs.length === 0}
+						<p class="text-base-content/30 italic mb-4">No content yet.</p>
+					{/if}
+				{/each}
+			{:else}
 				<h2 class="text-2xl font-bold mb-4">{currentChapter.title}</h2>
 
 				<!-- Chapter Outline -->
@@ -932,6 +981,7 @@
 						{/if}
 					</div>
 				{/each}
+			{/if}
 			</div>
 		</div>
 	</main>

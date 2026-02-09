@@ -11,6 +11,11 @@ function slugify(text: string): string {
 	return text.replace(/[^a-zA-Z0-9 ]/g, '').replace(/\s+/g, '-').toLowerCase();
 }
 
+function timestamp(): string {
+	const d = new Date();
+	return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}-${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
 function buildMarkdown(title: string, chapters: DownloadChapter[]): string {
 	let md = `# ${title}\n\n`;
 	for (const ch of chapters) {
@@ -85,11 +90,11 @@ function triggerDownload(blob: Blob, filename: string) {
 
 export function downloadMarkdown(title: string, chapters: DownloadChapter[]) {
 	const md = buildMarkdown(title, chapters);
-	triggerDownload(new Blob([md], { type: 'text/markdown' }), `${slugify(title)}.md`);
+	triggerDownload(new Blob([md], { type: 'text/markdown' }), `${slugify(title)}-${timestamp()}.md`);
 }
 
 export function downloadPdf(title: string, chapters: DownloadChapter[]) {
 	const doc = buildPdf(title, chapters);
 	const blob = doc.output('blob');
-	triggerDownload(blob, `${slugify(title)}.pdf`);
+	triggerDownload(blob, `${slugify(title)}-${timestamp()}.pdf`);
 }
