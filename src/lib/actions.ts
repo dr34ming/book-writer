@@ -49,6 +49,8 @@ export function summarizeAction(action: AIAction): string {
 			return 'Downloaded the book';
 		case 'set_user_instructions':
 			return 'Updated project instructions';
+		case 'read_aloud':
+			return 'Reading aloud';
 		default:
 			return action.tool.replace(/_/g, ' ');
 	}
@@ -370,6 +372,10 @@ async function executeAction(
 					previousSessionSummary: (action.summary as string) ?? null
 				}));
 			}
+			break;
+		}
+		case 'read_aloud': {
+			// Handled in the page component (needs aiSpeaking state)
 			break;
 		}
 	}

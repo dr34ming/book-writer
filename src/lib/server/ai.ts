@@ -224,6 +224,20 @@ export const TOOLS = [
 				required: ['note']
 			}
 		}
+	},
+	{
+		type: 'function' as const,
+		function: {
+			name: 'read_aloud',
+			description: 'Read content aloud to the user with the narrator voice (male). Use this when the user asks you to read back a paragraph, section, or chapter. Provide the actual text content to read — do not reference positions, provide the full text. Keep to roughly one page max (~3000 chars).',
+			parameters: {
+				type: 'object',
+				properties: {
+					content: { type: 'string', description: 'The text to read aloud' }
+				},
+				required: ['content']
+			}
+		}
 	}
 ];
 

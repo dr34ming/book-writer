@@ -5,7 +5,7 @@ let recognition: any = null;
 let currentAudio: HTMLAudioElement | null = null;
 
 // Sentence queue for streaming TTS
-let sentenceQueue: string[] = [];
+let sentenceQueue: Array<{ text: string; voice: Voice }> = [];
 let queuePlaying = false;
 let queueStopped = false;
 let queueDoneCallback: (() => void) | null = null;
@@ -85,13 +85,15 @@ export function stopListening() {
 	pauseListening();
 }
 
+type Voice = 'editor' | 'narrator';
+
 // Play a single sentence via TTS
-async function playSentence(text: string): Promise<void> {
+async function playSentence(text: string, voice: Voice = 'editor'): Promise<void> {
 	try {
 		const resp = await fetch('/api/tts', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ text })
+			body: JSON.stringify({ text, voice })
 		});
 
 		if (!resp.ok) {
@@ -124,8 +126,8 @@ async function processQueue() {
 
 	while (sentenceQueue.length > 0) {
 		if (queueStopped) break;
-		const sentence = sentenceQueue.shift()!;
-		await playSentence(sentence);
+		const item = sentenceQueue.shift()!;
+		await playSentence(item.text, item.voice);
 		if (queueStopped) break;
 	}
 
@@ -143,9 +145,9 @@ async function processQueue() {
 }
 
 // Queue a sentence for TTS — starts playing immediately if idle
-export function queueSentence(text: string) {
+export function queueSentence(text: string, voice: Voice = 'editor') {
 	if (!text.trim()) return;
-	sentenceQueue.push(text.trim());
+	sentenceQueue.push({ text: text.trim(), voice });
 	processQueue();
 }
 
@@ -179,6 +181,41 @@ export async function speak(text: string): Promise<void> {
 	if (!text) return;
 	pauseListening();
 	await playSentence(text);
+}
+
+// Read content aloud with the narrator voice. Splits into chunks for long text.
+export function readAloud(text: string, onDone?: () => void) {
+	if (!text.trim()) return;
+	stopSpeaking();
+
+	// Split into ~500 char chunks at sentence boundaries
+	const chunks: string[] = [];
+	let remaining = text.trim();
+	while (remaining.length > 0) {
+		if (remaining.length <= 600) {
+			chunks.push(remaining);
+			break;
+		}
+		// Find sentence break near 500 chars
+		const slice = remaining.slice(0, 600);
+		const breakIdx = Math.max(
+			slice.lastIndexOf('. '),
+			slice.lastIndexOf('! '),
+			slice.lastIndexOf('? ')
+		);
+		if (breakIdx > 200) {
+			chunks.push(remaining.slice(0, breakIdx + 1));
+			remaining = remaining.slice(breakIdx + 2);
+		} else {
+			chunks.push(slice);
+			remaining = remaining.slice(600);
+		}
+	}
+
+	for (const chunk of chunks) {
+		queueSentence(chunk, 'narrator');
+	}
+	flushQueue(onDone);
 }
 
 export function stopSpeaking() {

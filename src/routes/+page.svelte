@@ -3,7 +3,7 @@
 	import type { Chapter, Paragraph, BookTask, AIAction } from '$lib/types';
 	import { executeActions, summarizeAction, type PageState } from '$lib/actions';
 	import { downloadMarkdown, downloadPdf, type DownloadChapter } from '$lib/download';
-	import { startListening, pauseListening, stopListening, stopSpeaking, queueSentence, flushQueue, isSpeaking, pttStart, pttStop } from '$lib/voice';
+	import { startListening, pauseListening, stopListening, stopSpeaking, queueSentence, flushQueue, isSpeaking, pttStart, pttStop, readAloud } from '$lib/voice';
 
 	let { data }: { data: PageData } = $props();
 
@@ -285,12 +285,11 @@
 							for (const summary of summaries) {
 								messages = [...messages, { role: 'action', content: summary }];
 							}
-							// Scroll to and flash affected paragraphs
+							// Scroll to and flash affected paragraphs, handle read_aloud
 							for (const action of parsed.actions as Array<{ tool: string; [k: string]: unknown }>) {
 								if (action.tool === 'highlight_paragraph' && selectedParagraph) {
 									requestAnimationFrame(() => scrollToAndFlash(selectedParagraph!));
 								} else if (action.tool === 'add_paragraph') {
-									// New paragraph is last in list
 									const last = paragraphs[paragraphs.length - 1];
 									if (last) requestAnimationFrame(() => scrollToAndFlash(last.id));
 								} else if (action.tool === 'edit_paragraph') {
@@ -300,6 +299,12 @@
 										undoableIds = new Set([...undoableIds, para.id]);
 										requestAnimationFrame(() => scrollToAndFlash(para.id));
 									}
+								} else if (action.tool === 'read_aloud' && action.content) {
+									aiSpeaking = true;
+									readAloud(action.content as string, () => {
+										aiSpeaking = false;
+										if (voiceMode === 'live') startListening((text) => sendMessage(text));
+									});
 								}
 							}
 						} else if (parsed.type === 'ai_notes') {

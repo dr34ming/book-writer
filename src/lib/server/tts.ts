@@ -1,8 +1,10 @@
 const ELEVENLABS_URL = 'https://api.elevenlabs.io/v1/text-to-speech';
-const DEFAULT_VOICE_ID = '21m00Tcm4TlvDq8ikWAM'; // Rachel
+const VOICE_EDITOR = '21m00Tcm4TlvDq8ikWAM'; // Rachel (female, editor)
+const VOICE_NARRATOR = 'pNInz6obpgDQGcFmaJgB'; // Adam (male, narrator)
 
-export async function synthesize(text: string, apiKey: string): Promise<Response> {
-	const response = await fetch(`${ELEVENLABS_URL}/${DEFAULT_VOICE_ID}`, {
+export async function synthesize(text: string, apiKey: string, voice: 'editor' | 'narrator' = 'editor'): Promise<Response> {
+	const voiceId = voice === 'narrator' ? VOICE_NARRATOR : VOICE_EDITOR;
+	const response = await fetch(`${ELEVENLABS_URL}/${voiceId}`, {
 		method: 'POST',
 		headers: {
 			'xi-api-key': apiKey,
