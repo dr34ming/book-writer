@@ -91,6 +91,15 @@
   animation: pulsar-warning 2s ease-out infinite;
 }
 
+[contenteditable="true"] {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+[contenteditable="false"] {
+  cursor: text;
+}
+
 @keyframes yellow-fade {
   0% { background-color: oklch(85% 0.15 85); }
   100% { background-color: transparent; }

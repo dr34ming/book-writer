@@ -394,23 +394,27 @@
 	}
 
 	// Save outline
-	async function saveOutline(event: SubmitEvent) {
-		const form = event.target as HTMLFormElement;
-		const formData = new FormData(form);
-		const outline = formData.get('outline') as string;
-
+	async function saveOutlineInline(outline: string) {
+		if (outline === (currentChapter.outline ?? '')) {
+			editingOutline = false;
+			return;
+		}
 		await fetch(`/api/chapters/${currentChapter.id}`, {
 			method: 'PATCH',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ outline })
+			body: JSON.stringify({ outline: outline || null })
 		});
-
-		currentChapter = { ...currentChapter, outline } as typeof currentChapter;
+		currentChapter = { ...currentChapter, outline: outline || null } as typeof currentChapter;
 		editingOutline = false;
 	}
 
 	// Paragraph editing
 	async function saveParagraph(paraId: number, content: string) {
+		const original = paragraphs.find((p) => p.id === paraId)?.content;
+		if (content === original) {
+			editingParagraph = null;
+			return;
+		}
 		const resp = await fetch(`/api/paragraphs/${paraId}`, {
 			method: 'PATCH',
 			headers: { 'Content-Type': 'application/json' },
@@ -421,6 +425,23 @@
 		paragraphs = paragraphs.map((p) => (p.id === paraId ? { ...p, content } : p));
 		wordCount = data.wordCount;
 		editingParagraph = null;
+	}
+
+	function handleParaBlur(event: FocusEvent, paraId: number) {
+		const el = event.target as HTMLElement;
+		const content = el.innerText.trim();
+		saveParagraph(paraId, content);
+	}
+
+	function handleParaKeydown(event: KeyboardEvent, paraId: number) {
+		if (event.key === 'Escape') {
+			event.preventDefault();
+			const el = event.target as HTMLElement;
+			const original = paragraphs.find((p) => p.id === paraId)?.content ?? '';
+			el.innerText = original;
+			editingParagraph = null;
+			el.blur();
+		}
 	}
 
 	// Tasks
@@ -529,14 +550,6 @@
 		sendMessage(inputText);
 	}
 
-	// Handle paragraph save form
-	function handleParagraphSave(event: SubmitEvent, paraId: number) {
-		event.preventDefault();
-		const form = event.target as HTMLFormElement;
-		const formData = new FormData(form);
-		const content = formData.get('content') as string;
-		saveParagraph(paraId, content);
-	}
 </script>
 
 {#if !loggedIn}
@@ -891,35 +904,16 @@
 				<h2 class="text-2xl font-bold mb-4">{currentChapter.title}</h2>
 
 				<!-- Chapter Outline -->
-				<div class="mb-6">
-					{#if editingOutline}
-						<form onsubmit={(e) => { e.preventDefault(); saveOutline(e); }} class="bg-base-200 rounded-lg p-3">
-							<label class="label text-xs font-semibold pb-1" for="outline">Chapter Outline</label>
-							<textarea
-								id="outline"
-								name="outline"
-								class="textarea textarea-bordered textarea-sm w-full min-h-20"
-								placeholder="Plan this chapter..."
-							>{currentChapter.outline ?? ''}</textarea>
-							<div class="flex gap-2 mt-2">
-								<button type="submit" class="btn btn-xs btn-primary">Save</button>
-								<button type="button" onclick={() => (editingOutline = false)} class="btn btn-xs">Cancel</button>
-							</div>
-						</form>
-					{:else}
-						<button
-							class="bg-base-200/50 rounded-lg p-3 cursor-pointer hover:bg-base-200 transition-colors w-full text-left"
-							onclick={() => (editingOutline = true)}
-						>
-							{#if currentChapter.outline}
-								<p class="text-xs font-semibold text-base-content/60 mb-1">Outline</p>
-								<p class="text-sm text-base-content/70 whitespace-pre-wrap">{currentChapter.outline}</p>
-							{:else}
-								<p class="text-xs text-base-content/30 italic">Click to add chapter outline...</p>
-							{/if}
-						</button>
-					{/if}
-				</div>
+				<!-- svelte-ignore a11y_no_static_element_interactions -->
+				<div
+					class="mb-6 rounded-lg p-3 outline-none text-sm {editingOutline ? 'bg-base-200 ring-1 ring-primary/30' : 'bg-base-200/30 hover:bg-base-200/50 cursor-text'} {!currentChapter.outline && !editingOutline ? 'text-base-content/30 italic' : 'text-base-content/70'}"
+					contenteditable={editingOutline ? 'true' : 'false'}
+					role="textbox"
+					tabindex="0"
+					onclick={() => { editingOutline = true; }}
+					onblur={(e) => { saveOutlineInline((e.target as HTMLElement).innerText.trim()); }}
+					onkeydown={(e) => { if (e.key === 'Escape') { (e.target as HTMLElement).innerText = currentChapter.outline ?? ''; editingOutline = false; (e.target as HTMLElement).blur(); } }}
+				>{currentChapter.outline ?? 'Click to add outline...'}</div>
 
 				{#if paragraphs.length === 0}
 					<div class="text-base-content/40 italic">
@@ -948,18 +942,7 @@
 								</button>
 							{/if}
 						</div>
-						{#if editingParagraph === para.id}
-							<form onsubmit={(e) => handleParagraphSave(e, para.id)} class="flex-1">
-								<textarea
-									name="content"
-									class="textarea textarea-bordered w-full min-h-24"
-								>{para.content}</textarea>
-								<div class="flex gap-2 mt-1">
-									<button type="submit" class="btn btn-sm btn-primary">Save</button>
-									<button type="button" onclick={() => (editingParagraph = null)} class="btn btn-sm">Cancel</button>
-								</div>
-							</form>
-						{:else if para.content.startsWith('[IMAGE:')}
+						{#if para.content.startsWith('[IMAGE:')}
 							<button
 								class="flex-1 cursor-pointer hover:opacity-80 text-left"
 								onclick={() => (editingParagraph = para.id)}
@@ -972,12 +955,16 @@
 								</div>
 							</button>
 						{:else}
-							<button
-								class="flex-1 leading-relaxed cursor-pointer hover:bg-base-200 rounded p-1 -m-1 text-left"
-								onclick={() => (editingParagraph = para.id)}
-							>
-								{para.content}
-							</button>
+							<!-- svelte-ignore a11y_no_static_element_interactions -->
+							<div
+								class="flex-1 leading-relaxed rounded p-1 -m-1 outline-none {editingParagraph === para.id ? 'bg-base-200 ring-1 ring-primary/30' : 'hover:bg-base-200/50 cursor-text'}"
+								contenteditable={editingParagraph === para.id ? 'true' : 'false'}
+								role="textbox"
+								tabindex="0"
+								onclick={() => { editingParagraph = para.id; }}
+								onblur={(e) => handleParaBlur(e, para.id)}
+								onkeydown={(e) => { if (editingParagraph === para.id) handleParaKeydown(e, para.id); }}
+							>{para.content}</div>
 						{/if}
 					</div>
 				{/each}
