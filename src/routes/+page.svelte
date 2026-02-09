@@ -68,6 +68,19 @@
 	let chatContainer: HTMLDivElement;
 	let manuscriptContainer: HTMLDivElement;
 
+	// Undo state — track paragraph IDs that can be undone
+	let undoableIds = $state<Set<number>>(new Set());
+
+	async function undoParagraph(paraId: number) {
+		const resp = await fetch(`/api/paragraphs/${paraId}/undo`, { method: 'POST' });
+		if (!resp.ok) return;
+		const data = await resp.json() as any;
+		paragraphs = paragraphs.map((p) => (p.id === paraId ? { ...p, content: data.paragraph.content } : p));
+		wordCount = data.wordCount;
+		undoableIds = new Set([...undoableIds].filter((id) => id !== paraId));
+		scrollToAndFlash(paraId);
+	}
+
 	// Flash/scroll state
 	let flashParagraphId = $state<number | null>(null);
 	let flashTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -231,7 +244,10 @@
 								} else if (action.tool === 'edit_paragraph') {
 									const pos = action.paragraph_position as number;
 									const para = paragraphs.find((p) => p.position === pos);
-									if (para) requestAnimationFrame(() => scrollToAndFlash(para.id));
+									if (para) {
+										undoableIds = new Set([...undoableIds, para.id]);
+										requestAnimationFrame(() => scrollToAndFlash(para.id));
+									}
 								}
 							}
 						} else if (parsed.type === 'ai_notes') {
@@ -864,12 +880,25 @@
 
 				{#each paragraphs as para (para.id)}
 					<div id="paragraph-{para.id}" class="flex gap-4 mb-4 group {flashParagraphId === para.id ? 'yfe' : ''}">
-						<button
-							class="w-8 text-right text-sm cursor-pointer select-none shrink-0 pt-1 {selectedParagraph === para.id ? 'text-primary font-bold' : 'text-base-content/30 group-hover:text-base-content/60'}"
-							onclick={() => (selectedParagraph = para.id)}
-						>
-							{para.position}
-						</button>
+						<div class="w-8 shrink-0 pt-1 flex flex-col items-end gap-1">
+							<button
+								class="text-sm cursor-pointer select-none {selectedParagraph === para.id ? 'text-primary font-bold' : 'text-base-content/30 group-hover:text-base-content/60'}"
+								onclick={() => (selectedParagraph = para.id)}
+							>
+								{para.position}
+							</button>
+							{#if undoableIds.has(para.id)}
+								<button
+									onclick={() => undoParagraph(para.id)}
+									class="btn btn-ghost btn-xs text-warning px-0.5"
+									title="Undo last edit"
+								>
+									<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+										<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h10a5 5 0 015 5v2M3 10l4-4m-4 4l4 4" />
+									</svg>
+								</button>
+							{/if}
+						</div>
 						{#if editingParagraph === para.id}
 							<form onsubmit={(e) => handleParagraphSave(e, para.id)} class="flex-1">
 								<textarea

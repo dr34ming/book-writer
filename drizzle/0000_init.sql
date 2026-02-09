@@ -62,6 +62,20 @@ CREATE TABLE `project_notes` (
 );
 CREATE UNIQUE INDEX `project_notes_book_id_key_unique` ON `project_notes` (`book_id`, `key`);
 
+CREATE TABLE `events` (
+	`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
+	`book_id` integer NOT NULL REFERENCES `books`(`id`) ON DELETE CASCADE,
+	`session_id` integer REFERENCES `sessions`(`id`),
+	`action` text NOT NULL,
+	`entity_type` text NOT NULL,
+	`entity_id` integer,
+	`before_state` text,
+	`after_state` text,
+	`chat_snapshot` text,
+	`source` text DEFAULT 'user' NOT NULL,
+	`created_at` text DEFAULT (datetime('now')) NOT NULL
+);
+
 CREATE TABLE `book_tasks` (
 	`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
 	`book_id` integer NOT NULL REFERENCES `books`(`id`) ON DELETE CASCADE,

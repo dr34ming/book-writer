@@ -3,6 +3,7 @@ import type { RequestHandler } from './$types';
 import { getDb } from '$lib/server/db';
 import { paragraphs, chapters } from '$lib/server/db/schema';
 import { eq, max } from 'drizzle-orm';
+import { logEvent } from '$lib/server/events';
 
 export const POST: RequestHandler = async ({ request, platform }) => {
 	if (!platform) return json({ error: 'no platform' }, { status: 500 });
@@ -20,6 +21,18 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 		.insert(paragraphs)
 		.values({ chapter_id, content, position })
 		.returning();
+
+	// Log event
+	const [chapter] = await db.select().from(chapters).where(eq(chapters.id, chapter_id)).limit(1);
+	if (chapter) {
+		await logEvent(db, {
+			book_id: chapter.book_id,
+			action: 'add_paragraph',
+			entity_type: 'paragraph',
+			entity_id: para.id,
+			after_state: para
+		});
+	}
 
 	return json({ paragraph: para });
 };

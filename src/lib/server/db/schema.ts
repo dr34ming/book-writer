@@ -103,6 +103,24 @@ export const projectNotes = sqliteTable(
 	(table) => [uniqueIndex('project_notes_book_id_key_unique').on(table.book_id, table.key)]
 );
 
+export const events = sqliteTable('events', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	book_id: integer('book_id')
+		.notNull()
+		.references(() => books.id, { onDelete: 'cascade' }),
+	session_id: integer('session_id').references(() => sessions.id),
+	action: text('action').notNull(), // e.g. 'edit_paragraph', 'add_chapter', 'add_paragraph'
+	entity_type: text('entity_type').notNull(), // 'paragraph', 'chapter', 'task', 'session', 'note'
+	entity_id: integer('entity_id'), // the ID of the affected row
+	before_state: text('before_state'), // JSON snapshot of the entity before the change
+	after_state: text('after_state'), // JSON snapshot of the entity after the change
+	chat_snapshot: text('chat_snapshot'), // JSON array of messages at this point in time
+	source: text('source').notNull().default('user'), // 'user' or 'ai'
+	created_at: text('created_at')
+		.notNull()
+		.default(sql`(datetime('now'))`)
+});
+
 export const bookTasks = sqliteTable('book_tasks', {
 	id: integer('id').primaryKey({ autoIncrement: true }),
 	book_id: integer('book_id')

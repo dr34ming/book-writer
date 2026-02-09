@@ -3,6 +3,7 @@ import type { RequestHandler } from './$types';
 import { getDb } from '$lib/server/db';
 import { chapters, paragraphs } from '$lib/server/db/schema';
 import { eq, asc, max } from 'drizzle-orm';
+import { logEvent } from '$lib/server/events';
 
 export const POST: RequestHandler = async ({ request, platform }) => {
 	if (!platform) return json({ error: 'no platform' }, { status: 500 });
@@ -26,6 +27,14 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 		.from(chapters)
 		.where(eq(chapters.book_id, book_id))
 		.orderBy(asc(chapters.position));
+
+	await logEvent(db, {
+		book_id,
+		action: 'add_chapter',
+		entity_type: 'chapter',
+		entity_id: chapter.id,
+		after_state: chapter
+	});
 
 	return json({
 		chapter: { ...chapter, paragraphs: [] },

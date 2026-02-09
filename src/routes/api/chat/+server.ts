@@ -6,6 +6,7 @@ import { buildSystemPrompt, streamChat } from '$lib/server/ai';
 import { extractActions, extractNotes } from '$lib/server/ai-actions';
 import { eq, and } from 'drizzle-orm';
 import { env } from '$env/dynamic/private';
+import { logEvent } from '$lib/server/events';
 
 export const POST: RequestHandler = async ({ request, platform }) => {
 	const { messages, book_id, session_id } = await request.json() as { messages: Array<{ role: string; content: string }>; book_id: number; session_id: number };
@@ -120,6 +121,19 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 					session_id,
 					role: 'assistant',
 					content: cleanContent
+				});
+
+				// Log chat event with full snapshot
+				const chatSnapshot = [...messages, { role: 'assistant', content: cleanContent }];
+				await logEvent(db, {
+					book_id,
+					session_id,
+					action: 'chat_message',
+					entity_type: 'session',
+					entity_id: session_id,
+					after_state: { actions: actions.length > 0 ? actions : undefined },
+					chat_snapshot: chatSnapshot,
+					source: 'ai'
 				});
 
 				// Send actions if any

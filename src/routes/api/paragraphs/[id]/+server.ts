@@ -3,12 +3,16 @@ import type { RequestHandler } from './$types';
 import { getDb } from '$lib/server/db';
 import { paragraphs, chapters } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
+import { logEvent } from '$lib/server/events';
 
 export const PATCH: RequestHandler = async ({ params, request, platform }) => {
 	if (!platform) return json({ error: 'no platform' }, { status: 500 });
 	const db = getDb(platform);
 	const id = parseInt(params.id);
 	const { content } = await request.json() as { content: string };
+
+	// Capture before state
+	const [before] = await db.select().from(paragraphs).where(eq(paragraphs.id, id)).limit(1);
 
 	await db.update(paragraphs).set({ content }).where(eq(paragraphs.id, id));
 
@@ -33,6 +37,16 @@ export const PATCH: RequestHandler = async ({ params, request, platform }) => {
 		(sum, p) => sum + (p.content?.split(/\s+/).filter(Boolean).length ?? 0),
 		0
 	);
+
+	// Log event
+	await logEvent(db, {
+		book_id: chapter.book_id,
+		action: 'edit_paragraph',
+		entity_type: 'paragraph',
+		entity_id: id,
+		before_state: before,
+		after_state: para
+	});
 
 	return json({ paragraph: para, wordCount });
 };

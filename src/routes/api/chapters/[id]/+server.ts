@@ -3,6 +3,7 @@ import type { RequestHandler } from './$types';
 import { getDb } from '$lib/server/db';
 import { chapters, paragraphs } from '$lib/server/db/schema';
 import { eq, asc } from 'drizzle-orm';
+import { logEvent } from '$lib/server/events';
 
 export const GET: RequestHandler = async ({ params, platform }) => {
 	if (!platform) return json({ error: 'no platform' }, { status: 500 });
@@ -39,6 +40,8 @@ export const PATCH: RequestHandler = async ({ params, request, platform }) => {
 	const id = parseInt(params.id);
 	const updates = await request.json() as Record<string, unknown>;
 
+	const [before] = await db.select().from(chapters).where(eq(chapters.id, id)).limit(1);
+
 	await db.update(chapters).set(updates as typeof chapters.$inferInsert).where(eq(chapters.id, id));
 
 	const [chapter] = await db.select().from(chapters).where(eq(chapters.id, id)).limit(1);
@@ -47,6 +50,17 @@ export const PATCH: RequestHandler = async ({ params, request, platform }) => {
 		.from(paragraphs)
 		.where(eq(paragraphs.chapter_id, id))
 		.orderBy(asc(paragraphs.position));
+
+	if (before) {
+		await logEvent(db, {
+			book_id: chapter.book_id,
+			action: 'edit_chapter',
+			entity_type: 'chapter',
+			entity_id: id,
+			before_state: before,
+			after_state: chapter
+		});
+	}
 
 	return json({ chapter: { ...chapter, paragraphs: paras } });
 };
