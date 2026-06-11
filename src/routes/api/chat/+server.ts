@@ -9,10 +9,10 @@ import { logEvent } from '$lib/server/events';
 
 export const POST: RequestHandler = async ({ request, platform }) => {
 	const { messages, book_id, session_id } = await request.json() as { messages: Array<{ role: string; content: string }>; book_id: number; session_id: number };
-	const apiKey = env.OPENROUTER_API_KEY;
+	const apiKey = env.ANTHROPIC_API_KEY;
 
 	if (!apiKey) {
-		return json({ error: 'OPENROUTER_API_KEY not set' }, { status: 500 });
+		return json({ error: 'ANTHROPIC_API_KEY not set' }, { status: 500 });
 	}
 
 	if (!platform) {
@@ -31,8 +31,11 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 		});
 	}
 
-	// Build system prompt
+	// Build system prompt — split into a cacheable stable prefix and a small
+	// volatile suffix (see buildSystemPrompt). The full text is used only for
+	// token estimation below.
 	const systemPrompt = await buildSystemPrompt(db, book_id);
+	const systemPromptText = `${systemPrompt.stable}\n\n${systemPrompt.volatile}`;
 
 	// Stream response as SSE
 	const encoder = new TextEncoder();
@@ -42,7 +45,7 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 				// Emit context stats
 				const estimateTokens = (text: string) => Math.ceil(text.length / 3.5);
 				const chatText = messages.map((m: { content: string }) => m.content).join('');
-				const systemTokens = estimateTokens(systemPrompt);
+				const systemTokens = estimateTokens(systemPromptText);
 				const chatTokens = estimateTokens(chatText);
 				controller.enqueue(
 					encoder.encode(`data: ${JSON.stringify({

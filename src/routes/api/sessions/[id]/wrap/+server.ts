@@ -12,7 +12,7 @@ export const POST: RequestHandler = async ({ params, request, platform }) => {
 	const id = parseInt(params.id);
 	const { book_id, messages, summary: providedSummary } = await request.json() as { book_id: number; messages: Array<{ role: string; content: string }>; summary?: string };
 
-	const apiKey = env.OPENROUTER_API_KEY;
+	const apiKey = env.ANTHROPIC_API_KEY;
 	let summary = providedSummary;
 
 	// If no summary provided, generate one

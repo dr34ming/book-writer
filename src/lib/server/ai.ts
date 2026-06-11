@@ -2,10 +2,13 @@ import { chapters, paragraphs, projectNotes, bookTasks, sessions } from '$lib/se
 import { type Database } from '$lib/server/db';
 import { eq, and, desc, asc } from 'drizzle-orm';
 
-const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
-const MODEL = 'anthropic/claude-sonnet-4-5';
+const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
+const ANTHROPIC_VERSION = '2023-06-01';
+// Configurable: swap for any current Claude model (e.g. claude-opus-4-6).
+const MODEL = 'claude-sonnet-4-6';
 
-// OpenAI-compatible tool definitions
+// OpenAI-compatible tool definitions (source of truth).
+// Translated to Anthropic's `tools` format in `toAnthropicTools`.
 export const TOOLS = [
 	{
 		type: 'function' as const,
@@ -274,11 +277,30 @@ For example: [IMAGE: Photo of the finished mushroom cultivation setup with label
 These render as visual placeholder blocks in the manuscript. Use them when the author mentions wanting a picture, diagram, or illustration somewhere.`;
 }
 
-export async function buildSystemPrompt(db: Database, bookId: number): Promise<string> {
-	let prompt = defaultSystemPrompt();
+/**
+ * The system prompt is split into two parts to make prompt caching effective:
+ *
+ *  - `stable`: the default prompt, full manuscript, user/AI notes, open tasks,
+ *    and previous-session summary. This is byte-stable within a session, so it
+ *    gets a `cache_control: ephemeral` marker and is read from cache (~90%
+ *    cheaper, much faster) on every turn after the first.
+ *
+ *  - `volatile`: the current time and the once-per-day feedback reminder. These
+ *    change turn-to-turn, so they're sent as a separate, uncached block AFTER
+ *    the cached prefix — including them in the cached block would bust the cache
+ *    every minute.
+ *
+ * Anthropic caches the longest matching prefix of content blocks, so order
+ * matters: stable block first (cached), volatile block second (uncached).
+ */
+export type SystemPromptParts = { stable: string; volatile: string };
 
-	// Current time
-	prompt += `\n\n## Current Time\n${new Date().toLocaleString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })}`;
+export async function buildSystemPrompt(db: Database, bookId: number): Promise<SystemPromptParts> {
+	let prompt = defaultSystemPrompt();
+	let volatile = '';
+
+	// Current time — volatile, must stay out of the cached prefix.
+	volatile += `## Current Time\n${new Date().toLocaleString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })}`;
 
 	// Full book content
 	const chapterRows = await db
@@ -319,7 +341,9 @@ export async function buildSystemPrompt(db: Database, bookId: number): Promise<s
 
 	const shouldRemind = !lastReminder?.value || lastReminder.value < today;
 	if (shouldRemind) {
-		prompt += `\n\n## Feedback Reminder\nThis is the first message today. Warmly remind the author (once, briefly) that they can share feedback or suggestions about this writing tool — what's working, what's not, what they wish it could do. Keep it to one sentence, woven naturally into your greeting. After this reminder, use save_note so you don't remind again today.`;
+		// Volatile: only present on the first message of the day, so it cannot
+		// live in the cached prefix.
+		volatile += `\n\n## Feedback Reminder\nThis is the first message today. Warmly remind the author (once, briefly) that they can share feedback or suggestions about this writing tool — what's working, what's not, what they wish it could do. Keep it to one sentence, woven naturally into your greeting. After this reminder, use save_note so you don't remind again today.`;
 		if (lastReminder) {
 			await db
 				.update(projectNotes)
@@ -398,31 +422,69 @@ export async function buildSystemPrompt(db: Database, bookId: number): Promise<s
 		}
 	}
 
-	return prompt;
+	return { stable: prompt, volatile };
 }
 
-// Stream events from OpenRouter
+// ---------------------------------------------------------------------------
+// Anthropic Messages API
+// ---------------------------------------------------------------------------
+
+type AnthropicTextBlock = { type: 'text'; text: string; cache_control?: { type: 'ephemeral' } };
+
+/**
+ * Translate the OpenAI-style TOOLS into Anthropic's `tools` format:
+ *   { type:'function', function:{ name, description, parameters } }
+ *     -> { name, description, input_schema }
+ */
+function toAnthropicTools() {
+	return TOOLS.map((t) => ({
+		name: t.function.name,
+		description: t.function.description,
+		input_schema: t.function.parameters
+	}));
+}
+
+/**
+ * Build the `system` field as an array of content blocks so we can attach
+ * `cache_control` to the stable prefix only. Anthropic caches the longest
+ * matching prefix of blocks; the volatile block (if any) is appended after the
+ * cached marker and is therefore never cached.
+ */
+function buildSystemBlocks(system: string | SystemPromptParts): AnthropicTextBlock[] {
+	const parts: SystemPromptParts =
+		typeof system === 'string' ? { stable: system, volatile: '' } : system;
+
+	const blocks: AnthropicTextBlock[] = [
+		{ type: 'text', text: parts.stable, cache_control: { type: 'ephemeral' } }
+	];
+	if (parts.volatile.trim()) {
+		blocks.push({ type: 'text', text: parts.volatile });
+	}
+	return blocks;
+}
+
+// Stream events surfaced to callers (shape unchanged from the OpenRouter impl).
 export type StreamEvent =
 	| { type: 'text'; content: string }
 	| { type: 'tool_calls'; calls: Array<{ name: string; arguments: Record<string, unknown> }> };
 
 export async function* streamChat(
 	messages: { role: string; content: string }[],
-	systemPrompt: string,
+	systemPrompt: string | SystemPromptParts,
 	apiKey: string
 ): AsyncGenerator<StreamEvent> {
-	const fullMessages = [{ role: 'system', content: systemPrompt }, ...messages];
-
-	const response = await fetch(OPENROUTER_URL, {
+	const response = await fetch(ANTHROPIC_URL, {
 		method: 'POST',
 		headers: {
-			Authorization: `Bearer ${apiKey}`,
+			'x-api-key': apiKey,
+			'anthropic-version': ANTHROPIC_VERSION,
 			'Content-Type': 'application/json'
 		},
 		body: JSON.stringify({
 			model: MODEL,
-			messages: fullMessages,
-			tools: TOOLS,
+			system: buildSystemBlocks(systemPrompt),
+			messages: messages.map((m) => ({ role: m.role, content: m.content })),
+			tools: toAnthropicTools(),
 			max_tokens: 4096,
 			stream: true
 		})
@@ -430,17 +492,18 @@ export async function* streamChat(
 
 	if (!response.ok) {
 		const text = await response.text();
-		throw new Error(`OpenRouter ${response.status}: ${text}`);
+		throw new Error(`Anthropic ${response.status}: ${text}`);
 	}
 
 	const reader = response.body!.getReader();
 	const decoder = new TextDecoder();
 	let buffer = '';
 
-	// Accumulate tool calls across chunks
-	const toolCallMap = new Map<number, { name: string; arguments: string }>();
+	// Track tool_use blocks by their content-block index. Anthropic streams the
+	// JSON input as `input_json_delta` partial-JSON chunks per block.
+	const toolBlocks = new Map<number, { name: string; partialJson: string }>();
 
-	while (true) {
+	for (;;) {
 		const { done, value } = await reader.read();
 		if (done) break;
 
@@ -449,45 +512,53 @@ export async function* streamChat(
 		buffer = lines.pop() ?? '';
 
 		for (const line of lines) {
-			if (!line.startsWith('data: ')) continue;
-			const data = line.slice(6).trim();
-			if (data === '[DONE]') break;
+			const trimmed = line.trim();
+			if (!trimmed.startsWith('data:')) continue;
+			const data = trimmed.slice(5).trim();
+			if (!data || data === '[DONE]') continue;
 
+			let parsed: any;
 			try {
-				const parsed = JSON.parse(data);
-				const delta = parsed.choices?.[0]?.delta;
-				if (!delta) continue;
-
-				// Text content
-				if (delta.content) {
-					yield { type: 'text', content: delta.content };
-				}
-
-				// Tool calls (streamed as chunks)
-				if (delta.tool_calls) {
-					for (const tc of delta.tool_calls) {
-						const idx = tc.index ?? 0;
-						if (!toolCallMap.has(idx)) {
-							toolCallMap.set(idx, { name: '', arguments: '' });
-						}
-						const entry = toolCallMap.get(idx)!;
-						if (tc.function?.name) entry.name = tc.function.name;
-						if (tc.function?.arguments) entry.arguments += tc.function.arguments;
-					}
-				}
+				parsed = JSON.parse(data);
 			} catch {
-				// skip malformed chunks
+				continue; // skip malformed chunks
+			}
+
+			switch (parsed.type) {
+				case 'content_block_start': {
+					const block = parsed.content_block;
+					if (block?.type === 'tool_use') {
+						toolBlocks.set(parsed.index, { name: block.name, partialJson: '' });
+					}
+					break;
+				}
+				case 'content_block_delta': {
+					const delta = parsed.delta;
+					if (delta?.type === 'text_delta' && delta.text) {
+						yield { type: 'text', content: delta.text };
+					} else if (delta?.type === 'input_json_delta') {
+						const entry = toolBlocks.get(parsed.index);
+						if (entry) entry.partialJson += delta.partial_json ?? '';
+					}
+					break;
+				}
+				case 'error': {
+					throw new Error(`Anthropic stream error: ${JSON.stringify(parsed.error)}`);
+				}
 			}
 		}
 	}
 
-	// Yield accumulated tool calls at the end
-	if (toolCallMap.size > 0) {
-		const calls = [...toolCallMap.values()]
-			.filter(tc => tc.name)
-			.map(tc => {
+	// Emit accumulated tool calls once the stream completes.
+	if (toolBlocks.size > 0) {
+		const calls = [...toolBlocks.values()]
+			.filter((tc) => tc.name)
+			.map((tc) => {
 				try {
-					return { name: tc.name, arguments: JSON.parse(tc.arguments) as Record<string, unknown> };
+					const args = tc.partialJson.trim()
+						? (JSON.parse(tc.partialJson) as Record<string, unknown>)
+						: {};
+					return { name: tc.name, arguments: args };
 				} catch {
 					return null;
 				}
@@ -512,25 +583,31 @@ export async function summarize(
 
 Keep it under 300 words. This summary will replace the old messages to save context space.`;
 
+	// Anthropic requires the first message to be from the user and forbids a
+	// trailing assistant turn for this prompt, so append the instruction as a
+	// final user message.
 	const fullMessages = [...messages, { role: 'user', content: summaryPrompt }];
 
-	const response = await fetch(OPENROUTER_URL, {
+	const response = await fetch(ANTHROPIC_URL, {
 		method: 'POST',
 		headers: {
-			Authorization: `Bearer ${apiKey}`,
+			'x-api-key': apiKey,
+			'anthropic-version': ANTHROPIC_VERSION,
 			'Content-Type': 'application/json'
 		},
 		body: JSON.stringify({
 			model: MODEL,
-			messages: fullMessages,
+			messages: fullMessages.map((m) => ({ role: m.role, content: m.content })),
 			max_tokens: 512
 		})
 	});
 
 	if (!response.ok) {
-		throw new Error(`OpenRouter ${response.status}`);
+		const text = await response.text();
+		throw new Error(`Anthropic ${response.status}: ${text}`);
 	}
 
-	const json = await response.json() as any;
-	return json.choices[0].message.content;
+	const json = (await response.json()) as any;
+	const textBlock = json.content?.find((b: any) => b.type === 'text');
+	return textBlock?.text ?? '';
 }
