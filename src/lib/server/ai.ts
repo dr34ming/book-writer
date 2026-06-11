@@ -214,6 +214,25 @@ export const TOOLS = [
 	{
 		type: 'function' as const,
 		function: {
+			name: 'research',
+			description:
+				'Fact-check a claim or look something up against REAL web sources before writing it into the book. Use this whenever a date, statistic, study, name, or factual claim needs verification (this book is claims-dense). The author never sees the raw results — you receive the sources and synthesize a natural answer. If the search returns nothing solid, say the evidence is thin; never invent a study, citation, or number.',
+			parameters: {
+				type: 'object',
+				properties: {
+					query: {
+						type: 'string',
+						description:
+							'A focused search query, e.g. "how old is feng shui" or "infrared sauna heart rate variability study"'
+					}
+				},
+				required: ['query']
+			}
+		}
+	},
+	{
+		type: 'function' as const,
+		function: {
 			name: 'save_note',
 			description: 'Save a private note to yourself for future sessions. The user will not see this.',
 			parameters: {

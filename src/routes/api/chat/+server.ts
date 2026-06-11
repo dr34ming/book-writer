@@ -3,9 +3,14 @@ import type { RequestHandler } from './$types';
 import { getDb } from '$lib/server/db';
 import { messages as messagesTable, projectNotes } from '$lib/server/db/schema';
 import { buildSystemPrompt, streamChat } from '$lib/server/ai';
+import { research, formatResearchResult } from '$lib/server/research';
 import { eq, and } from 'drizzle-orm';
 import { env } from '$env/dynamic/private';
 import { logEvent } from '$lib/server/events';
+
+// Cap research round-trips per user turn so a misbehaving model can't loop
+// forever calling the search API.
+const MAX_RESEARCH_ROUNDS = 3;
 
 export const POST: RequestHandler = async ({ request, platform }) => {
 	const { messages, book_id, session_id } = await request.json() as { messages: Array<{ role: string; content: string }>; book_id: number; session_id: number };
@@ -55,18 +60,43 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 				);
 
 				let fullContent = '';
+				// Everything streamed to the author across all passes, so the
+				// persisted message matches what they actually saw on screen.
+				let streamedSoFar = '';
 
-				for await (const event of streamChat(messages, systemPrompt, apiKey)) {
+				// `convo` is the running message list sent to the model. Research
+				// round-trips append synthetic turns to it (assistant ack + a
+				// user-framed tool result) and re-invoke the model so it can
+				// synthesize a natural answer from REAL sources. The raw search
+				// results are never streamed to the client — only the model's
+				// synthesized text reaches the author.
+				const braveKey = env.BRAVE_SEARCH_API_KEY;
+				let convo: Array<{ role: string; content: string }> = messages;
+				let round = 0;
+
+				researchLoop: for (;;) {
+					let pendingResearch: { query: string } | null = null;
+
+					for await (const event of streamChat(convo, systemPrompt, apiKey)) {
 					if (event.type === 'text') {
 						fullContent += event.content;
+						streamedSoFar += event.content;
 						controller.enqueue(
 							encoder.encode(`data: ${JSON.stringify({ type: 'token', content: event.content })}\n\n`)
 						);
 					} else if (event.type === 'tool_calls') {
-						// Separate save_note calls from UI actions
+						// Separate save_note / research from UI actions
 						const uiActions = [];
 						for (const call of event.calls) {
-							if (call.name === 'save_note') {
+							if (call.name === 'research') {
+								// Server-side, model round-trip. We only honour the
+								// first research call per pass; additional calls in
+								// the same pass fall through to the next round.
+								const query = String(call.arguments.query ?? '').trim();
+								if (query && !pendingResearch) {
+									pendingResearch = { query };
+								}
+							} else if (call.name === 'save_note') {
 								// Handle save_note server-side
 								const note = call.arguments.note as string;
 								if (note) {
@@ -111,17 +141,60 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 							);
 						}
 					}
+					}
+
+					// No research requested this pass — the turn is complete.
+					if (!pendingResearch || round >= MAX_RESEARCH_ROUNDS) {
+						break researchLoop;
+					}
+
+					round += 1;
+
+					// Surface the research step in the client action log (the query
+					// only — never the raw results).
+					controller.enqueue(
+						encoder.encode(
+							`data: ${JSON.stringify({
+								type: 'actions',
+								actions: [{ tool: 'research', query: pendingResearch.query }]
+							})}\n\n`
+						)
+					);
+
+					// Run the real search and frame it as a tool result for the
+					// model. The author never sees this text.
+					const result = await research(pendingResearch.query, braveKey);
+					const resultText = formatResearchResult(result);
+
+					// Continue the conversation: record what the model already said
+					// (so it isn't lost), then hand it the results to synthesize
+					// from. Anthropic requires a non-empty assistant turn, so fall
+					// back to an internal note if the model only emitted a tool call.
+					convo = [
+						...convo,
+						{
+							role: 'assistant',
+							content: fullContent.trim() || `(Looking up: ${pendingResearch.query})`
+						},
+						{
+							role: 'user',
+							content: `[research results — internal, the author cannot see this]\n\n${resultText}`
+						}
+					];
+					// Reset streamed text for the synthesis pass.
+					fullContent = '';
 				}
 
-				// Persist assistant message
+				// Persist assistant message — the full text the author saw across
+				// all research round-trips (raw search results were never streamed).
 				await db.insert(messagesTable).values({
 					session_id,
 					role: 'assistant',
-					content: fullContent
+					content: streamedSoFar
 				});
 
 				// Log chat event
-				const chatSnapshot = [...messages, { role: 'assistant', content: fullContent }];
+				const chatSnapshot = [...messages, { role: 'assistant', content: streamedSoFar }];
 				await logEvent(db, {
 					book_id,
 					session_id,

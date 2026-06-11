@@ -51,6 +51,8 @@ export function summarizeAction(action: AIAction): string {
 			return 'Updated project instructions';
 		case 'read_aloud':
 			return 'Reading aloud';
+		case 'research':
+			return action.query ? `Researched: ${action.query}` : 'Researched a fact';
 		default:
 			return action.tool.replace(/_/g, ' ');
 	}
